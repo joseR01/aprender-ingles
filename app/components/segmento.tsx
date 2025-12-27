@@ -1,18 +1,29 @@
 "use client";
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause, BookmarkPlus, Clock, ArrowDown, ArrowUp, Upload, Video, FileText, Pencil, Trash2 } from 'lucide-react';
+import { Play, Pause, BookmarkPlus, Clock, ArrowDown, ArrowUp, Upload, Video, FileText, Pencil, Trash2, Save } from 'lucide-react';
 
 // Interfaces para tipado
-interface SubtitleSegment {
-    tiempo_ms: number;
-    texto: string;
-}
-
 interface VideoSegment {
     id: number;
     start: number;
     end: number;
     label: string;
+}
+
+interface SubtitleSegment {
+    tiempo_ms: number;
+    texto: string;
+}
+
+interface SegmentoProps {
+    mode?: 'create' | 'edit' | 'view';
+    initialData?: {
+        id?: string;
+        videoUrl?: string;
+        subtitles?: SubtitleSegment[]; // Or VideoSegment[] if pre-processed
+        segments?: VideoSegment[];
+    };
+    onSaveSuccess?: () => void;
 }
 
 // Función utilitaria para convertir segundos a formato MM:SS.xx
@@ -35,22 +46,25 @@ const formatTime = (seconds: number): string => {
 };
 
 // Componente principal de la aplicación
-const Segmento: React.FC = () => {
+const Segmento: React.FC<SegmentoProps> = ({ mode = 'create', initialData, onSaveSuccess }) => {
     // --- ESTADOS DE LA APLICACIÓN ---
-    const [videoSrc, setVideoSrc] = useState<string | null>(null);
+    const [videoSrc, setVideoSrc] = useState<string | null>(initialData?.videoUrl || null);
     const [startTime, setStartTime] = useState<number | string>(0.00);
     const [endTime, setEndTime] = useState<number | string>(0.00);
-    const [segments, setSegments] = useState<VideoSegment[]>([]);
+    const [segments, setSegments] = useState<VideoSegment[]>(initialData?.segments || []);
     const [segmentLabel, setSegmentLabel] = useState<string>(''); // Nuevo estado para la etiqueta
-    const [currentPlaybackId, setCurrentPlaybackId] = useState<number | null>(null);
     const [statusMessage, setStatusMessage] = useState<string>('');
-    const [videoLoaded, setVideoLoaded] = useState<boolean>(false);
+    const [videoLoaded, setVideoLoaded] = useState<boolean>(!!initialData?.videoUrl);
     const [subtitleData, setSubtitleData] = useState<SubtitleSegment[] | null>(null);
     // NUEVO ESTADO: ID del segmento que se está editando. Null si no se edita.
     const [editingSegmentId, setEditingSegmentId] = useState<number | null>(null);
     const [playSegmentId, setPlaySegmentId] = useState<number | null>(null);
+    const [videoFile, setVideoFile] = useState<File | null>(null); // State for the actual file object
+    const [isSaving, setIsSaving] = useState<boolean>(false);
     // Referencia para el elemento de video HTML
     const videoRef = useRef<HTMLVideoElement>(null);
+
+    const isReadOnly = mode === 'view';
 
     // --- LÓGICA DE CARGA Y LIMPIEZA DE ARCHIVO ---
 
@@ -58,7 +72,8 @@ const Segmento: React.FC = () => {
     useEffect(() => {
         const previousSrc = videoSrc;
         return () => {
-            if (previousSrc) {
+            // Only revoke if it was a blob URL created by us (starts with blob:)
+            if (previousSrc && previousSrc.startsWith('blob:')) {
                 URL.revokeObjectURL(previousSrc);
             }
         };
@@ -73,11 +88,12 @@ const Segmento: React.FC = () => {
             const file = event.target.files[0];
             const newVideoSrc = URL.createObjectURL(file);
 
-            if (videoSrc) {
+            if (videoSrc && videoSrc.startsWith('blob:')) {
                 URL.revokeObjectURL(videoSrc);
             }
 
             setVideoSrc(newVideoSrc);
+            setVideoFile(file); // Store file for backend upload
             setSegments([]);
             setStartTime(0.00);
             setEndTime(0.00);
@@ -301,7 +317,6 @@ const Segmento: React.FC = () => {
         };
         setSegments([...segments, newSegment]);
         setStatusMessage(`Segmento duplicado: ${newSegment.label}`);
-        setStatusMessage(`Segmento duplicado: ${newSegment.label}`);
         setEditingSegmentId(null); // Desactivar modo edición al duplicar
         setStartTime(0.00); // Limpiar inputs
         setEndTime(0.00);
@@ -418,16 +433,30 @@ const Segmento: React.FC = () => {
     // Función principal para reproducir un segmento
     const handlePlaySegment = (segment: VideoSegment): void => {
         const video = videoRef.current;
-        if (!video || !videoLoaded) {
-            setStatusMessage('El video no está listo.');
+        console.log("handlePlaySegment called", segment);
+        if (!video) {
+            console.error("Video ref is null");
+            setStatusMessage('Error: Referencia de video no encontrada.');
             return;
         }
+        if (!videoLoaded) {
+            console.warn("Video not loaded yet");
+            setStatusMessage('El video no está listo. (Not loaded)');
+            // Attempt to play anyway if src is set as it might trigger load
+            if (!video.src) return; 
+        }
 
-        video.currentTime = segment.start;
-        setPlaySegmentId(segment.id);
-        video.play();
-
-        // El control de pausa ahora lo maneja el useEffect con 'timeupdate'
+        console.log("Seeking to:", segment.start);
+        try {
+             video.currentTime = segment.start;
+             setPlaySegmentId(segment.id);
+             video.play().catch(e => {
+                 console.error("Play error:", e);
+                 setStatusMessage(`Error al reproducir: ${e.message}`);
+             });
+        } catch (e) {
+             console.error("Seek error:", e);
+        }
     };
 
     // Detener cualquier reproducción de segmento si el usuario pausa manualmente
@@ -436,6 +465,52 @@ const Segmento: React.FC = () => {
         setStatusMessage("Reproducción de segmento detenida.");
         videoRef.current?.pause();
     };
+
+    // --- GUARDAR EN BACKEND ---
+    const handleSaveToBackend = async () => {
+        if (mode === 'create' && !videoFile) {
+            setStatusMessage('Error: No hay video cargado para guardar.');
+            return;
+        }
+
+        setIsSaving(true);
+        setStatusMessage('Guardando...');
+
+        const formData = new FormData();
+        if (videoFile) {
+             formData.append('video', videoFile);
+        }
+        formData.append('subtitles', JSON.stringify(segments, null, 2));
+
+        try {
+            let url = '/api/segments';
+            let method = 'POST';
+
+            if (mode === 'edit' && initialData?.id) {
+                url = `/api/segments/${initialData.id}`;
+                method = 'PUT'; // Typically PUT/PATCH for updates
+            }
+
+            const response = await fetch(url, {
+                method: method,
+                body: formData,
+            });
+
+            const result = await response.json();
+
+            if (response.ok) {
+                setStatusMessage(`✅ ${mode === 'edit' ? 'Actualizado' : 'Guardado'} exitosamente.`);
+                if (onSaveSuccess) onSaveSuccess();
+            } else {
+                setStatusMessage(`❌ Error: ${result.error || result.message}`);
+            }
+        } catch (error) {
+            setStatusMessage(`❌ Error de conexión: ${(error as Error).message}`);
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
 
     // --- RENDERIZADO DEL COMPONENTE ---
 
@@ -472,7 +547,8 @@ const Segmento: React.FC = () => {
                 Controlador de Segmentos de Video Local
             </h1>
 
-            {/* SECCIÓN DE CARGA DE ARCHIVOS */}
+            {/* SECCIÓN DE CARGA DE ARCHIVOS - SOLO EN CREATE/EDIT (y Edit solo si quiere reemplazar, por simplicidad ocultamos en edit si no se requiere, pero aquí lo dejamos para reemplazar video si se desea en Create, en Edit quizás solo subtitulos? Por ahora solo Create deja cargar video nuevo facilmente) */}
+            {!isReadOnly && mode === 'create' && (
             <div className="mb-8 p-6 bg-white rounded-xl shadow-lg border border-gray-100">
                 <h2 className="text-xl font-bold text-gray-800 mb-4 border-b pb-2">
                     Paso 1: Cargar Archivos
@@ -508,6 +584,8 @@ const Segmento: React.FC = () => {
                     </div>
                 </div>
             </div>
+            )}
+
 
             {/* CONTENEDOR PRINCIPAL: VIDEO Y LISTA */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -529,7 +607,7 @@ const Segmento: React.FC = () => {
                         ) : (
                             <div className="w-full h-full bg-gray-200 flex items-center justify-center text-gray-600 text-center p-8">
                                 <Video className="w-10 h-10 mr-3" />
-                                Selecciona un archivo de video local.
+                                {mode === 'create' ? 'Selecciona un archivo de video local.' : 'Video no disponible.'}
                             </div>
                         )}
                     </div>
@@ -537,7 +615,7 @@ const Segmento: React.FC = () => {
 
                     {/* MENSAJES DE ESTADO */}
                     {statusMessage && (
-                        <div className={`p-4 rounded-lg text-sm mb-6 ${statusMessage.includes('Error') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                        <div className={`p-4 rounded-lg text-sm mb-6 ${statusMessage.includes('Error') || statusMessage.includes('❌') ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
                             {statusMessage}
                         </div>
                     )}
@@ -557,14 +635,13 @@ const Segmento: React.FC = () => {
                     </div>
 
 
-                    {/* CONTROLES DE SEGMENTOS MANUALES */}
+                    {/* CONTROLES DE SEGMENTOS MANUALES - SOLO SI NO ES READONLY */}
+                    {!isReadOnly && (
                     <div id="manual-controls" className="p-6 bg-white rounded-xl shadow-lg border border-gray-100">
                         <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center">
                             <Clock className="w-5 h-5 mr-2 text-indigo-500" />
-                            Definir Segmento Manualmente
-
+                            {isEditing ? 'Editar Segmento' : 'Definir Nuevo Segmento'}
                         </h2>
-                        <p className="text-sm text-gray-500 mb-4">Usa los botones para capturar el tiempo actual del video (al milisegundo más cercano).</p>
 
                         {/* Nuevo Input para la Etiqueta */}
                         <div className="mb-4">
@@ -583,44 +660,50 @@ const Segmento: React.FC = () => {
 
                             {/* Inicio */}
                             <div className="flex flex-col space-y-2">
-                                <label className="text-xs font-medium text-gray-500">Tiempo de Inicio (Segundos.Milisegundos)</label>
-                                <input
-                                    type="number"
-                                    value={typeof startTime === 'number' ? startTime.toFixed(2) : startTime}
-                                    onChange={(e) => handleTimeInputChange(e, setStartTime)}
-                                    className={inputClasses}
-                                    min="0"
-                                    step="0.01"
-                                    disabled={!isVideoActionEnabled}
-                                />
-                                <button
-                                    onClick={() => handleCaptureTime('start')}
-                                    disabled={!isVideoActionEnabled}
-                                    className={`${buttonBaseClasses} bg-green-500 text-white hover:bg-green-600 disabled:opacity-50 focus:ring-green-300`}
-                                >
-                                    <ArrowDown className="w-4 h-4" /> INICIO ({formatTime(start)})
-                                </button>
+                                <label className="text-xs font-medium text-gray-500">Tiempo de Inicio ({formatTime(typeof startTime === 'number' ? startTime : parseFloat(startTime as string))})</label>
+                                <div className="flex items-center space-x-1">
+                                    <input
+                                        type="number"
+                                        value={startTime}
+                                        onChange={(e) => handleTimeInputChange(e, setStartTime)}
+                                        className={inputClasses}
+                                        min="0"
+                                        step="0.01"
+                                        disabled={!isVideoActionEnabled}
+                                    />
+                                    <button
+                                        onClick={() => handleCaptureTime('start')}
+                                        disabled={!isVideoActionEnabled}
+                                        className="p-2 rounded bg-green-500 text-white hover:bg-green-600 focus:outline-none"
+                                        title="Capturar Inicio"
+                                    >
+                                        <ArrowDown className="w-5 h-5" />
+                                    </button>
+                                </div>
                             </div>
 
                             {/* Final */}
                             <div className="flex flex-col space-y-2">
-                                <label className="text-xs font-medium text-gray-500">Tiempo de Fin (Segundos.Milisegundos)</label>
-                                <input
-                                    type="number"
-                                    value={typeof endTime === 'number' ? endTime.toFixed(2) : endTime}
-                                    onChange={(e) => handleTimeInputChange(e, setEndTime)}
-                                    className={inputClasses}
-                                    min="0"
-                                    step="0.01"
-                                    disabled={!isVideoActionEnabled}
-                                />
-                                <button
-                                    onClick={() => handleCaptureTime('end')}
-                                    disabled={!isVideoActionEnabled}
-                                    className={`${buttonBaseClasses} bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 focus:ring-red-300`}
-                                >
-                                    <ArrowUp className="w-4 h-4" /> FINAL ({formatTime(end)})
-                                </button>
+                                <label className="text-xs font-medium text-gray-500">Tiempo de Fin ({formatTime(typeof endTime === 'number' ? endTime : parseFloat(endTime as string))})</label>
+                                <div className="flex items-center space-x-1">
+                                    <input
+                                        type="number"
+                                        value={endTime}
+                                        onChange={(e) => handleTimeInputChange(e, setEndTime)}
+                                        className={inputClasses}
+                                        min="0"
+                                        step="0.01"
+                                        disabled={!isVideoActionEnabled}
+                                    />
+                                    <button
+                                        onClick={() => handleCaptureTime('end')}
+                                        disabled={!isVideoActionEnabled}
+                                        className="p-2 rounded bg-red-500 text-white hover:bg-red-600 focus:outline-none"
+                                        title="Capturar Final"
+                                    >
+                                        <ArrowUp className="w-5 h-5" />
+                                    </button>
+                                </div>
                             </div>
 
                             {/* Botón de AGREGAR / GUARDAR EDICIÓN */}
@@ -637,15 +720,32 @@ const Segmento: React.FC = () => {
 
                         </div>
                     </div>
+                    )}
                 </div>
 
                 {/* COLUMNA 3: LISTA DE SEGMENTOS */}
                 <div className="lg:col-span-1">
                     <div className="p-6 bg-white rounded-xl shadow-lg border border-gray-100 sticky lg:top-4">
-                        <h2 className="text-xl font-bold text-gray-800 mb-4 border-b pb-2">
-                            Lista de Segmentos Guardados ({segments.length})
-
-                        </h2>
+                        <div className="flex justify-between items-center mb-4 border-b pb-2">
+                            <h2 className="text-xl font-bold text-gray-800">
+                                Lista de Segmentos ({segments.length})
+                            </h2>
+                            {!isReadOnly && (
+                            <button
+                                onClick={handleSaveToBackend}
+                                disabled={isSaving || !videoLoaded}
+                                className={`flex items-center space-x-1 px-3 py-1.5 rounded-lg text-sm font-semibold text-white shadow-sm transition ${
+                                    isSaving || !videoLoaded
+                                        ? 'bg-gray-400 cursor-not-allowed'
+                                        : 'bg-indigo-600 hover:bg-indigo-700'
+                                }`}
+                                title="Guardar video y segmentos en el servidor"
+                            >
+                                <Save className="w-4 h-4" />
+                                <span>{isSaving ? 'Guardando...' : 'Guardar Todo'}</span>
+                            </button>
+                            )}
+                        </div>
 
                         {segments.length === 0 ? (
                             <p className="text-gray-500 italic">Define y agrega segmentos o carga un archivo de subtítulos para ver la lista aquí.</p>
@@ -673,32 +773,34 @@ const Segmento: React.FC = () => {
                                                     {playSegmentId === segment.id ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
                                                 </button>
 
-                                                {/* NUEVO: Botón Editar */}
-                                                <button
-                                                    onClick={() => handleEditSegment(segment)}
-                                                    className="p-1.5 bg-yellow-500 text-white rounded-full hover:bg-yellow-600 transition duration-150"
-                                                    title="Editar Segmento"
-                                                >
-                                                    <Pencil className="w-4 h-4" />
-                                                </button>
+                                                {/* Botones de Edición - SOLO SI NO ES READONLY */}
+                                                {!isReadOnly && (
+                                                <>
+                                                    <button
+                                                        onClick={() => handleEditSegment(segment)}
+                                                        className="p-1.5 bg-yellow-500 text-white rounded-full hover:bg-yellow-600 transition duration-150"
+                                                        title="Editar Segmento"
+                                                    >
+                                                        <Pencil className="w-4 h-4" />
+                                                    </button>
+                                                    
+                                                    <button
+                                                        onClick={() => handleDuplicateSegment(segment)}
+                                                        className="p-1.5 bg-green-500 text-white rounded-full hover:bg-green-600 transition duration-150"
+                                                        title="Duplicar Segmento"
+                                                    >
+                                                        <BookmarkPlus className="w-4 h-4" />
+                                                    </button>
 
-                                                {/* NUEVO: Botón Duplicar */}
-                                                <button
-                                                    onClick={() => handleDuplicateSegment(segment)}
-                                                    className="p-1.5 bg-green-500 text-white rounded-full hover:bg-green-600 transition duration-150"
-                                                    title="Duplicar Segmento"
-                                                >
-                                                    <BookmarkPlus className="w-4 h-4" />
-                                                </button>
-
-                                                {/* NUEVO: Botón Eliminar */}
-                                                <button
-                                                    onClick={() => handleDeleteSegment(segment.id)}
-                                                    className="p-1.5 bg-red-500 text-white rounded-full hover:bg-red-600 transition duration-150"
-                                                    title="Eliminar Segmento"
-                                                >
-                                                    <Trash2 className="w-4 h-4" />
-                                                </button>
+                                                    <button
+                                                        onClick={() => handleDeleteSegment(segment.id)}
+                                                        className="p-1.5 bg-red-500 text-white rounded-full hover:bg-red-600 transition duration-150"
+                                                        title="Eliminar Segmento"
+                                                    >
+                                                        <Trash2 className="w-4 h-4" />
+                                                    </button>
+                                                </>
+                                                )}
                                             </div>
                                         </div>
                                     </li>
