@@ -572,7 +572,7 @@ const Segmento: React.FC<SegmentoProps> = ({ mode = 'create', initialData, onSav
 
                     {/* CARGA DE VIDEO */}
                     <div className="flex flex-col space-y-2 p-4 border rounded-lg bg-gray-50">
-                        <label htmlFor="video-upload" className="block text-sm font-medium text-gray-700 flex items-center">
+                        <label htmlFor="video-upload" className=" text-sm font-medium text-gray-700 flex items-center">
                             <Upload className="w-4 h-4 mr-2 text-indigo-500" /> Cargar Video (.mp4, .mov):
                         </label>
                         <input
@@ -586,7 +586,7 @@ const Segmento: React.FC<SegmentoProps> = ({ mode = 'create', initialData, onSav
 
                     {/* CARGA DE SUBTÍTULOS JSON/TXT */}
                     <div className="flex flex-col space-y-2 p-4 border rounded-lg bg-gray-50">
-                        <label htmlFor="subtitle-upload" className="block text-sm font-medium text-gray-700 flex items-center">
+                        <label htmlFor="subtitle-upload" className=" text-sm font-medium text-gray-700 flex items-center">
                             <FileText className="w-4 h-4 mr-2 text-purple-500" /> Cargar Subtítulos (JSON o TXT):
                         </label>
                         <input
