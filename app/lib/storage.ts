@@ -11,7 +11,7 @@ const SUBS_DIR = path.join(UPLOADS_DIR, 'subtitles');
 export interface SegmentEntry {
     id: string;
     title: string;
-    videoFilename: string;
+    videoFilename: string | null;
     subtitleFilename: string | null;
     createdAt: string;
 }

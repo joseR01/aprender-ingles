@@ -20,21 +20,23 @@ export async function POST(request: NextRequest) {
         const videoFile = formData.get('video') as File;
         const subtitles = formData.get('subtitles') as string;
         
-        if (!videoFile) {
-            return NextResponse.json({ error: 'Video file is required' }, { status: 400 });
+        if (!videoFile && !subtitles) {
+             return NextResponse.json({ error: 'Provide at least video or subtitles' }, { status: 400 });
         }
 
         const id = Date.now().toString();
-        // Use a clean filename or just the ID for uniqueness to avoid collisions
-        const videoExt = path.extname(videoFile.name);
-        const videoFilename = `${id}${videoExt}`;
+        
+        let videoFilename = null;
+        if (videoFile) {
+            const videoExt = path.extname(videoFile.name);
+            videoFilename = `${id}${videoExt}`;
+            const videoPath = path.join(VIDEOS_DIR, videoFilename);
+            const buffer = Buffer.from(await videoFile.arrayBuffer());
+            await writeFile(videoPath, buffer);
+        }
+
         const subtitleFilename = `${id}.json`;
-
-        const videoPath = path.join(VIDEOS_DIR, videoFilename);
         const subPath = path.join(SUBS_DIR, subtitleFilename);
-
-        const buffer = Buffer.from(await videoFile.arrayBuffer());
-        await writeFile(videoPath, buffer);
 
         if (subtitles) {
             await writeFile(subPath, subtitles);
@@ -45,7 +47,7 @@ export async function POST(request: NextRequest) {
 
         const newEntry: SegmentEntry = {
             id,
-            title: videoFile.name, // Use original filename as initial title
+            title: videoFile ? videoFile.name : 'Untitled Segment (No Video)', 
             videoFilename,
             subtitleFilename,
             createdAt: new Date().toISOString()

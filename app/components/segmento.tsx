@@ -61,6 +61,7 @@ const Segmento: React.FC<SegmentoProps> = ({ mode = 'create', initialData, onSav
     const [playSegmentId, setPlaySegmentId] = useState<number | null>(null);
     const [videoFile, setVideoFile] = useState<File | null>(null); // State for the actual file object
     const [isSaving, setIsSaving] = useState<boolean>(false);
+    const [showSaveMenu, setShowSaveMenu] = useState<boolean>(false);
     // Referencia para el elemento de video HTML
     const videoRef = useRef<HTMLVideoElement>(null);
 
@@ -94,11 +95,16 @@ const Segmento: React.FC<SegmentoProps> = ({ mode = 'create', initialData, onSav
 
             setVideoSrc(newVideoSrc);
             setVideoFile(file); // Store file for backend upload
-            setSegments([]);
-            setStartTime(0.00);
-            setEndTime(0.00);
-            setSegmentLabel(''); // Reiniciar etiqueta
-            setEditingSegmentId(null); // Limpiar modo edición
+            
+            // Si estamos en modo 'create', limpiamos todo para empezar de cero.
+            // Si estamos en 'edit', conservamos los segmentos (asumiendo que solo reemplazamos el archivo de video de fondo)
+            if (mode === 'create') {
+                setSegments([]);
+                setStartTime(0.00);
+                setEndTime(0.00);
+                setSegmentLabel('');
+                setEditingSegmentId(null);
+            }
 
             setStatusMessage(`Video cargado: ${file.name}. Esperando metadatos.`);
         }
@@ -467,20 +473,29 @@ const Segmento: React.FC<SegmentoProps> = ({ mode = 'create', initialData, onSav
     };
 
     // --- GUARDAR EN BACKEND ---
-    const handleSaveToBackend = async () => {
-        if (mode === 'create' && !videoFile) {
+    const handleSaveToBackend = async (saveType: 'video' | 'subtitles' | 'both') => {
+        // Validación: Video requerido si saveType es 'video' o 'both' en CREATE
+        if (mode === 'create' && (saveType === 'video' || saveType === 'both') && !videoFile) {
             setStatusMessage('Error: No hay video cargado para guardar.');
             return;
         }
 
         setIsSaving(true);
-        setStatusMessage('Guardando...');
+        setStatusMessage(`Guardando ${saveType === 'both' ? 'todo' : saveType}...`);
+        setShowSaveMenu(false); // Close menu
 
         const formData = new FormData();
-        if (videoFile) {
-             formData.append('video', videoFile);
+        
+        // Append based on type
+        if (saveType === 'video' || saveType === 'both') {
+            if (videoFile) {
+                formData.append('video', videoFile);
+            }
         }
-        formData.append('subtitles', JSON.stringify(segments, null, 2));
+        
+        if (saveType === 'subtitles' || saveType === 'both') {
+             formData.append('subtitles', JSON.stringify(segments, null, 2));
+        }
 
         try {
             let url = '/api/segments';
@@ -488,7 +503,7 @@ const Segmento: React.FC<SegmentoProps> = ({ mode = 'create', initialData, onSav
 
             if (mode === 'edit' && initialData?.id) {
                 url = `/api/segments/${initialData.id}`;
-                method = 'PUT'; // Typically PUT/PATCH for updates
+                method = 'PUT';
             }
 
             const response = await fetch(url, {
@@ -500,7 +515,7 @@ const Segmento: React.FC<SegmentoProps> = ({ mode = 'create', initialData, onSav
 
             if (response.ok) {
                 setStatusMessage(`✅ ${mode === 'edit' ? 'Actualizado' : 'Guardado'} exitosamente.`);
-                if (onSaveSuccess) onSaveSuccess();
+                if (onSaveSuccess && mode === 'create') onSaveSuccess(); // Only redirect or callback on create if needed
             } else {
                 setStatusMessage(`❌ Error: ${result.error || result.message}`);
             }
@@ -547,11 +562,11 @@ const Segmento: React.FC<SegmentoProps> = ({ mode = 'create', initialData, onSav
                 Controlador de Segmentos de Video Local
             </h1>
 
-            {/* SECCIÓN DE CARGA DE ARCHIVOS - SOLO EN CREATE/EDIT (y Edit solo si quiere reemplazar, por simplicidad ocultamos en edit si no se requiere, pero aquí lo dejamos para reemplazar video si se desea en Create, en Edit quizás solo subtitulos? Por ahora solo Create deja cargar video nuevo facilmente) */}
-            {!isReadOnly && mode === 'create' && (
+            {/* SECCIÓN DE CARGA DE ARCHIVOS - VISIBLE EN CREATE Y EDIT */}
+            {!isReadOnly && (
             <div className="mb-8 p-6 bg-white rounded-xl shadow-lg border border-gray-100">
                 <h2 className="text-xl font-bold text-gray-800 mb-4 border-b pb-2">
-                    Paso 1: Cargar Archivos
+                    {mode === 'edit' ? 'Reemplazar Archivos (Opcional)' : 'Paso 1: Cargar Archivos'}
                 </h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
@@ -731,19 +746,46 @@ const Segmento: React.FC<SegmentoProps> = ({ mode = 'create', initialData, onSav
                                 Lista de Segmentos ({segments.length})
                             </h2>
                             {!isReadOnly && (
-                            <button
-                                onClick={handleSaveToBackend}
-                                disabled={isSaving || !videoLoaded}
-                                className={`flex items-center space-x-1 px-3 py-1.5 rounded-lg text-sm font-semibold text-white shadow-sm transition ${
-                                    isSaving || !videoLoaded
-                                        ? 'bg-gray-400 cursor-not-allowed'
-                                        : 'bg-indigo-600 hover:bg-indigo-700'
-                                }`}
-                                title="Guardar video y segmentos en el servidor"
-                            >
-                                <Save className="w-4 h-4" />
-                                <span>{isSaving ? 'Guardando...' : 'Guardar Todo'}</span>
-                            </button>
+                            <div className="relative">
+                                <button
+                                    onClick={() => setShowSaveMenu(!showSaveMenu)}
+                                    disabled={isSaving || !videoLoaded}
+                                    className={`flex items-center space-x-1 px-3 py-1.5 rounded-lg text-sm font-semibold text-white shadow-sm transition ${
+                                        isSaving || !videoLoaded
+                                            ? 'bg-gray-400 cursor-not-allowed'
+                                            : 'bg-indigo-600 hover:bg-indigo-700'
+                                    }`}
+                                    title="Opciones de Guardado"
+                                >
+                                    <Save className="w-4 h-4" />
+                                    <span>{isSaving ? 'Guardando...' : 'Guardar...'}</span>
+                                </button>
+                                
+                                {showSaveMenu && (
+                                    <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg z-50 border border-gray-200 overflow-hidden">
+                                        <div className="py-1">
+                                            <button
+                                                onClick={() => handleSaveToBackend('video')}
+                                                className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center"
+                                            >
+                                                <Video className="w-4 h-4 mr-2 text-blue-500" /> Solo Video
+                                            </button>
+                                            <button
+                                                onClick={() => handleSaveToBackend('subtitles')}
+                                                className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center"
+                                            >
+                                                <FileText className="w-4 h-4 mr-2 text-purple-500" /> Solo Subtítulos
+                                            </button>
+                                            <button
+                                                onClick={() => handleSaveToBackend('both')}
+                                                className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex items-center border-t"
+                                            >
+                                                <Save className="w-4 h-4 mr-2 text-green-500" /> Ambos (Todo)
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
                             )}
                         </div>
 

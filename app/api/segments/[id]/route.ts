@@ -37,8 +37,29 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     try {
         const formData = await request.formData();
         const subtitles = formData.get('subtitles') as string;
-        // Optionally handle video replacement here if needed, but usually we just update subs/title
+        const videoFile = formData.get('video') as File;
         
+        // Handle Video Replacement
+        if (videoFile && segment.videoFilename) {
+            const videoPath = path.join(VIDEOS_DIR, segment.videoFilename);
+            const buffer = Buffer.from(await videoFile.arrayBuffer());
+            await writeFile(videoPath, buffer);
+            // We don't update videoFilename usually as it relies on ID, assuming extension doesn't change 
+            // ... (rest of logic)
+        } else if (videoFile && !segment.videoFilename) {
+             // Case: Segment didn't have a video, but now we are uploading one.
+             // We need to generate a filename and update the segment.
+             const videoExt = path.extname(videoFile.name);
+             const newFilename = `${id}${videoExt}`;
+             const videoPath = path.join(VIDEOS_DIR, newFilename);
+             const buffer = Buffer.from(await videoFile.arrayBuffer());
+             await writeFile(videoPath, buffer);
+             
+             await updateSegment(id, { videoFilename: newFilename });
+        }
+
+
+        // Handle Subtitles Update
         if (subtitles && segment.subtitleFilename) {
             const subPath = path.join(SUBS_DIR, segment.subtitleFilename);
             await writeFile(subPath, subtitles);
@@ -46,6 +67,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         
         return NextResponse.json({ success: true, message: 'Updated successfully' });
     } catch (error) {
+        console.error("Update error:", error);
         return NextResponse.json({ error: 'Update failed' }, { status: 500 });
     }
 }
@@ -59,11 +81,19 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
     try {
         // Try deleting files
-        const videoPath = path.join(VIDEOS_DIR, segment.videoFilename);
-        const subPath = segment.subtitleFilename ? path.join(SUBS_DIR, segment.subtitleFilename) : null;
+        if (segment.videoFilename) {
+            const videoPath = path.join(VIDEOS_DIR, segment.videoFilename);
+            try { await unlink(videoPath); } catch (e) {
+                console.warn(`Could not delete video file: ${videoPath}`, e);
+            }
+        }
         
-        try { await unlink(videoPath); } catch (e) {}
-        if (subPath) { try { await unlink(subPath); } catch (e) {} }
+        if (segment.subtitleFilename) {
+            const subPath = path.join(SUBS_DIR, segment.subtitleFilename);
+            try { await unlink(subPath); } catch (e) {
+                console.warn(`Could not delete subtitle file: ${subPath}`, e);
+            }
+        }
 
         await deleteSegment(id);
         
